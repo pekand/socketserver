@@ -1,0 +1,24 @@
+{
+    "name": "pekand/socketserver",
+    "type": "library",
+    "description": "socket server",
+    "keywords": ["socketserver"],
+    "homepage": "https://www.pekand.com",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "pekand <pekand@gmail.com> ",
+            "email": "pekand@gmail.com",
+            "homepage": "https://www.pekand.com",
+            "role": ""
+        }
+    ],
+    "require": {
+        "php": ">=7.3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "pekand\\SocketServer\\": "src/"
+        }
+    }
+}
