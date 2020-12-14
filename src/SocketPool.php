@@ -3,8 +3,16 @@
 namespace pekand\SocketServer;
 
 class SocketPool {   
+    protected $options = [
+        'waitInterval' => 10000, // event loop wait cicle (in ms)
+    ];
+
+    private $clients = [];
     private $actions = [];
-    private $ticks = 0;
+
+    public function __construct($options = []) {
+        $this->options = array_merge($this->options, $options);
+    }
     
     public function addAction($params, $action) {
     	$action = [
@@ -25,30 +33,51 @@ class SocketPool {
         
         $this->actions[] = $action;
     }
+
+    public function addClient($client) {
+        $this->clients[] = $client;
+    }
     
 	public function listen($clients = null) {
+        $this->clients = array_merge($this->clients, $clients);
+
+        $this->startTime = microtime(true);
+
         foreach ($clients as $client) {
             $client->connect();
+            if($client->isConnected()) {
+                $client->callAfterClientConnected();
+            }
         }
-        
-        
-        while(true) {   
-            foreach ($clients as $client) {
-                $client->listenBody();
+
+        while(true) {
+            
+            $clientsToRemove = [];
+            foreach ($this->clients as $key => $client) {
+                $running = $client->listenBody();
+                if(!$running) {
+                    $clientsToRemove[] = $key;
+                }
+            }
+
+            foreach ($clientsToRemove as $key) {
+                unset($this->clients[$key]);
             }
         
+            $ticks = (microtime(true) - $this->startTime) * 1000000;
+
             $actionsToDiscard = [];    
             foreach ($this->actions as $key => &$action) {
                 if($action['executed']) {
                     continue;
                 }
                 
-                if($action['executeat'] > $this->ticks) {
+                if($action['executeat'] > $ticks) {
                     continue;
                 }
                    
                 if($action['repeat'] > 0) {
-                    $action['executeat'] = $this->ticks + $action['repeat'];
+                    $action['executeat'] = $ticks + $action['repeat'];
                 } else {
                     $actionsToDiscard[] = $key; 
                     $action['executed'] = true;
@@ -64,10 +93,12 @@ class SocketPool {
             foreach ($actionsToDiscard as $key) {
                 unset($this->actions[$key]);
             }
+
+            if(count($this->clients) == 0 && count($this->actions) == 0){
+                return;
+            }
             
-            
-            usleep(10000);
-            $this->ticks += 10000;
+            usleep($this->options['waitInterval']);
         }
     }
 }

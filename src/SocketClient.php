@@ -9,45 +9,117 @@ class SocketClient {
     protected $options = [
         'ip'=> '127.0.0.1', 
         'port' => 8080,
+        'waitInterval' => 10000, // event loop wait cicle (in ms)
     ];
     
     private $listeners = [];
        
     public function __construct($options = []) {
-        
         $this->options = array_merge($this->options, $options);
     }
 
     public function connect() {
-        $this->socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-        socket_set_option($this->socket, SOL_SOCKET, SO_REUSEADDR, 1);
+        $this->socket = @socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
 
-        if(false == @socket_connect($this->socket, $this->options['ip'], $this->options['port'])) {
+        if($this->socket === false){
+            $errorcode = socket_last_error($this->socket);
+            $errormsg = trim(socket_strerror($errorcode));
+            if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+            }
+            return null;
+        }
+
+        if(false === @socket_set_option($this->socket, SOL_SOCKET, SO_REUSEADDR, 1)) {
+            $errorcode = socket_last_error($this->socket);
+            $errormsg = trim(socket_strerror($errorcode));
+            if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+            }
+            return null;
+        }
+
+        if(false === @socket_connect($this->socket, $this->options['ip'], $this->options['port'])) {
             $this->socket = null;      
             
             if($this->socket != null) {
-                echo "socket_read() failed: reason: " . socket_strerror(socket_last_error($this->socket)) . "\n";
+                $errorcode = socket_last_error($this->socket);
+                $errormsg = trim(socket_strerror($errorcode));
+                if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                    call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+                }
             }
 
-             return;
-             
+            return null;
         }
-
+        
         if (isset($this->sendHeader) && is_callable($this->sendHeader)) {
             call_user_func_array($this->sendHeader, [$this]);
         }
         
-        if (false === ($headerFromServer = @socket_read($this->socket, 2048, MSG_WAITALL))) {
-            echo "socket_read() failed: reason: " . socket_strerror(socket_last_error($this->socket)) . "\n";
+        if (isset($this->afterReceiveHeaderEvent) && is_callable($this->afterReceiveHeaderEvent)) {
+            if (false === ($headerFromServer = @socket_read($this->socket, 2048, MSG_WAITALL))) {
+                $errorcode = socket_last_error($this->socket);
+                $errormsg = trim(socket_strerror($errorcode));
+                if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                    call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+                }
+            }
+
+            $acceptHeader = call_user_func_array($this->afterReceiveHeaderEvent, [$this, $headerFromServer]);
+
+            if(!$acceptHeader) {
+                $this->close();
+            }
         }
 
-        if (isset($this->receiveHeader) && is_callable($this->receiveHeader)) {
-            call_user_func_array($this->receiveHeader, [$headerFromServer]);
+        if($this->socket != null) {
+            if (false === @socket_set_nonblock($this->socket)) {
+                $errorcode = socket_last_error($this->socket);
+                $errormsg = trim(socket_strerror($errorcode));
+                if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                    call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+                }
+            }
         }
 
+        return $this;
+    }
+
+    public function close() {
+        if ($this->socket == null) {
+            return $this;
+        }
         
-        if(false === @socket_set_nonblock($this->socket)) {
-            echo "socket_read() failed: reason: " . socket_strerror(socket_last_error($this->socket)) . "\n";
+        socket_close($this->socket);
+        
+        $this->socket = null;
+
+        return $this;
+    }
+
+    public function isConnected() {
+        if($this->socket == null) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function afterClientError($afterClientErrorEvent = null) {
+        $this->afterClientErrorEvent = $afterClientErrorEvent;
+        return $this;
+    }
+
+    public function afterClientConnected($afterClientConnectedEvent = null) {
+        $this->afterClientConnectedEvent = $afterClientConnectedEvent;
+        return $this;
+    }
+
+    public function callAfterClientConnected() {
+
+        if (isset($this->afterClientConnectedEvent) && is_callable($this->afterClientConnectedEvent)) {
+            call_user_func_array($this->afterClientConnectedEvent, [$this]);
         }
 
         return $this;
@@ -57,9 +129,9 @@ class SocketClient {
          $this->sendHeader = $sendHeader;
          return $this;
     }
-    
-    public function addReceiveHeader($receiveHeader) {
-         $this->receiveHeader = $receiveHeader;
+
+    public function afterReceiveHeader($afterReceiveHeaderEvent) {
+         $this->afterReceiveHeaderEvent = $afterReceiveHeaderEvent;
          return $this;
     }
     
@@ -68,20 +140,15 @@ class SocketClient {
             return;    
         }
         
-        socket_write($this->socket, $data, strlen($data));
-    }
-    
-    public function close() {
-        if ($this->socket == null) {
-            return $this;
+        if(false === @socket_write($this->socket, $data, strlen($data))) {
+            $errorcode = socket_last_error($this->socket);
+            $errormsg = trim(socket_strerror($errorcode));
+            if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+            }
         }
-        
-        socket_close($this->socket);
-        
-        return $this;
     }
     
-
     public function addListener($listener) {
          $this->listeners[] = $listener;
          return $this;
@@ -89,13 +156,17 @@ class SocketClient {
    
     public function listenBody() {
         if (!$this->socket){
-            return;
+            return false;
         }
         
         $data = "";
         while ($buf = @socket_read($this->socket, 1024)) {  
             if ($buf === false) {
-                echo "socket_read() failed: reason: " . socket_strerror(socket_last_error($this->socket)) . "\n";
+                $errorcode = socket_last_error($this->socket);
+                $errormsg = trim(socket_strerror($errorcode));
+                if (isset($this->afterClientErrorEvent) && is_callable($this->afterClientErrorEvent)) {
+                    call_user_func_array($this->afterClientErrorEvent, [$this, $errorcode, $errormsg]);
+                }
                 break;
             }                 
             $data .= $buf;
@@ -104,24 +175,34 @@ class SocketClient {
         if(strlen($data)>0) {
             foreach ($this->listeners as $listener) {
                 if (is_callable($listener)) {
-                    call_user_func_array($listener, [$data]);
+                    call_user_func_array($listener, [$this, $data]);
                 }
             }   
         }
+
+        return true;
     }
      
     public function listen() {
-  
+
         $this->connect();
-        
+
         if (!$this->socket){
             return;
         }
-          
+
+        if($this->isConnected()) {
+            $this->callAfterClientConnected();
+        }
+
         while(true) {    
             $this->listenBody();
-            usleep(50000);
-        }    
-             
+
+            if ($this->socket == null) {
+                return;
+            }
+ 
+            usleep($this->options['waitInterval']);
+        }
     }
 }
